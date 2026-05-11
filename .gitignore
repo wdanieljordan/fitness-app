@@ -1,4 +1,5 @@
 .env
+.streamlit/secrets.toml
 fitness.db
 __pycache__/
 *.pyc
