@@ -28,10 +28,37 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# ── Password Gate ─────────────────────────────────────────────────────────────
+
+MAX_ATTEMPTS = 100
+
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "auth_attempts" not in st.session_state:
+    st.session_state.auth_attempts = 0
+
+if not st.session_state.authenticated:
+    if st.session_state.auth_attempts >= MAX_ATTEMPTS:
+        st.error("Too many failed attempts. Restart the app to try again.")
+        st.stop()
+
+    st.markdown("## 🏔️ Fitness Tracker")
+    with st.form("login_form"):
+        password = st.text_input("Password", type="password")
+        if st.form_submit_button("Enter"):
+            if password == st.secrets["APP_PASSWORD"]:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.session_state.auth_attempts += 1
+                remaining = MAX_ATTEMPTS - st.session_state.auth_attempts
+                st.error(f"Wrong password. {remaining} attempts remaining.")
+                st.stop()
+    st.stop()
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def get_week_start(offset: int = 0) -> str:
-    """Get ISO date string for Monday of current week + offset weeks."""
     today = date.today()
     monday = today - timedelta(days=today.weekday())
     return (monday + timedelta(weeks=offset)).isoformat()
@@ -117,14 +144,15 @@ with st.sidebar:
     st.metric("8-week completion", f"{rate:.0%}")
     st.markdown("---")
     st.markdown("**Quick log today**")
-    quick_note = st.text_input("Note", placeholder="Felt great, knee a bit stiff…")
-    quick_rpe = st.slider("RPE", 1, 10, 7)
-    if st.button("Log today's session"):
-        today_str = date.today().isoformat()
-        day_name = date.today().strftime("%A")
-        db.log_workout(today_str, day_name, "Today's session", True, quick_rpe, notes=quick_note)
-        st.success("Logged!")
-        st.rerun()
+    with st.form("sidebar_quick_log"):
+        quick_note = st.text_input("Note", placeholder="Felt great, knee a bit stiff…")
+        quick_rpe = st.slider("RPE", 1, 10, 7)
+        if st.form_submit_button("Log today's session"):
+            today_str = date.today().isoformat()
+            day_name = date.today().strftime("%A")
+            db.log_workout(today_str, day_name, "Today's session", True, quick_rpe, notes=quick_note)
+            st.success("Logged!")
+            st.rerun()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
@@ -146,7 +174,6 @@ with tab1:
     week_start = get_week_start(week_offset)
     st.caption(f"📆 {week_label(week_start)}")
 
-    # Load plan
     saved = db.get_weekly_plan(week_start)
     plan = saved["plan"] if saved else DEFAULT_PLAN
     this_week_logs = {l["day_label"]: l for l in db.get_logs_for_week(week_start)}
@@ -170,7 +197,6 @@ with tab1:
         tag = day_data.get("tag", "")
         title = day_data.get("title", "")
         duration = day_data.get("duration", "—")
-        window = day_data.get("window", "")
         description = day_data.get("description", "")
         exercises = day_data.get("exercises", [])
         notes = day_data.get("notes", "")
@@ -197,24 +223,22 @@ with tab1:
             with col2:
                 if not is_rest:
                     st.markdown("**Log this session:**")
-                    completed_cb = st.checkbox("Completed", value=bool(is_completed),
-                                               key=f"done_{day_name}")
-                    rpe_val = st.slider("RPE", 1, 10,
-                                        value=log["rpe"] if (log and log["rpe"]) else 7,
-                                        key=f"rpe_{day_name}")
-                    dur_val = st.number_input("Minutes", 0, 180,
-                                              value=log["duration_minutes"] if (log and log["duration_minutes"]) else 45,
-                                              key=f"dur_{day_name}")
-                    note_val = st.text_area("Notes", value=log["notes"] if (log and log["notes"]) else "",
-                                            key=f"note_{day_name}", height=68)
-                    if st.button("Save", key=f"save_{day_name}"):
-                        # Find the log_date for this day in the current week
-                        day_index = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].index(day_name)
-                        log_date = (date.fromisoformat(week_start) + timedelta(days=day_index)).isoformat()
-                        db.log_workout(log_date, day_name, title, completed_cb,
-                                       rpe_val, dur_val, note_val)
-                        st.success("Saved!")
-                        st.rerun()
+                    with st.form(key=f"form_{day_name}"):
+                        completed_cb = st.checkbox("Completed", value=bool(is_completed))
+                        rpe_val = st.slider("RPE", 1, 10,
+                                            value=log["rpe"] if (log and log["rpe"]) else 7)
+                        dur_val = st.number_input("Minutes", 0, 180,
+                                                  value=log["duration_minutes"] if (log and log["duration_minutes"]) else 45)
+                        note_val = st.text_area("Notes",
+                                                value=log["notes"] if (log and log["notes"]) else "",
+                                                height=68)
+                        if st.form_submit_button("Save"):
+                            day_index = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].index(day_name)
+                            log_date = (date.fromisoformat(week_start) + timedelta(days=day_index)).isoformat()
+                            db.log_workout(log_date, day_name, title, completed_cb,
+                                           rpe_val, dur_val, note_val)
+                            st.success("Saved!")
+                            st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — LOG
@@ -226,42 +250,43 @@ with tab2:
 
     with col1:
         st.markdown("### 🏋️ Workout")
-        log_date = st.date_input("Date", value=date.today(), key="log_date")
-        log_day = log_date.strftime("%A")
-        st.caption(f"Day: {log_day}")
-        session_title = st.text_input("Session name", placeholder="Zone 2 ride, Yoga, Strength…")
-        completed = st.checkbox("Completed", value=True)
-        rpe = st.slider("RPE (effort 1–10)", 1, 10, 7)
-        duration = st.number_input("Duration (minutes)", 0, 240, 45)
-        session_notes = st.text_area("Notes", placeholder="How did it feel? Anything notable…", height=100)
-        if st.button("💾 Save workout", type="primary"):
-            if session_title:
-                db.log_workout(log_date.isoformat(), log_day, session_title,
-                               completed, rpe, duration, session_notes)
-                st.success(f"Logged: {session_title} on {log_date}")
-                st.rerun()
-            else:
-                st.error("Add a session name.")
+        with st.form("workout_log_form"):
+            log_date = st.date_input("Date", value=date.today())
+            session_title = st.text_input("Session name", placeholder="Zone 2 ride, Yoga, Strength…")
+            completed = st.checkbox("Completed", value=True)
+            rpe = st.slider("RPE (effort 1–10)", 1, 10, 7)
+            duration = st.number_input("Duration (minutes)", 0, 240, 45)
+            session_notes = st.text_area("Notes", placeholder="How did it feel? Anything notable…", height=100)
+            if st.form_submit_button("💾 Save workout", type="primary"):
+                if session_title:
+                    log_day = log_date.strftime("%A")
+                    db.log_workout(log_date.isoformat(), log_day, session_title,
+                                   completed, rpe, duration, session_notes)
+                    st.success(f"Logged: {session_title} on {log_date}")
+                    st.rerun()
+                else:
+                    st.error("Add a session name.")
 
     with col2:
         st.markdown("### 📊 Daily Metrics")
-        metric_date = st.date_input("Date", value=date.today(), key="metric_date")
-        weight = st.number_input("Weight (lbs)", 0.0, 400.0, 195.0, step=0.5)
-        rhr = st.number_input("Resting HR (bpm)", 0, 200, 55)
-        sleep_h = st.number_input("Sleep (hours)", 0.0, 24.0, 7.5, step=0.25)
-        st.markdown("**Blood Pressure**")
-        bp_col1, bp_col2 = st.columns(2)
-        with bp_col1:
-            bp_sys = st.number_input("Systolic", 0, 250, 120, help="Top number, e.g. 122")
-        with bp_col2:
-            bp_dia = st.number_input("Diastolic", 0, 150, 80, help="Bottom number, e.g. 82")
-        metric_notes = st.text_input("Notes", placeholder="Felt rested, slight headache…")
-        if st.button("💾 Save metrics", type="primary"):
-            db.log_metric(metric_date.isoformat(), weight or None,
-                          rhr or None, sleep_h or None,
-                          bp_sys or None, bp_dia or None, metric_notes)
-            st.success(f"Metrics saved for {metric_date}")
-            st.rerun()
+        with st.form("metrics_form"):
+            metric_date = st.date_input("Date", value=date.today())
+            weight = st.number_input("Weight (lbs)", 0.0, 400.0, 195.0, step=0.5)
+            rhr = st.number_input("Resting HR (bpm)", 0, 200, 55)
+            sleep_h = st.number_input("Sleep (hours)", 0.0, 24.0, 7.5, step=0.25)
+            st.markdown("**Blood Pressure**")
+            bp_col1, bp_col2 = st.columns(2)
+            with bp_col1:
+                bp_sys = st.number_input("Systolic", 0, 250, 120, help="Top number, e.g. 122")
+            with bp_col2:
+                bp_dia = st.number_input("Diastolic", 0, 150, 80, help="Bottom number, e.g. 82")
+            metric_notes = st.text_input("Notes", placeholder="Felt rested, slight headache…")
+            if st.form_submit_button("💾 Save metrics", type="primary"):
+                db.log_metric(metric_date.isoformat(), weight or None,
+                              rhr or None, sleep_h or None,
+                              bp_sys or None, bp_dia or None, metric_notes)
+                st.success(f"Metrics saved for {metric_date}")
+                st.rerun()
 
     st.markdown("---")
     st.markdown("### Recent Logs")
@@ -298,8 +323,7 @@ with tab3:
                 if df_m["weight_lbs"].notna().any():
                     fig = px.line(df_m.dropna(subset=["weight_lbs"]),
                                   x="metric_date", y="weight_lbs",
-                                  title="Weight (lbs)",
-                                  markers=True)
+                                  title="Weight (lbs)", markers=True)
                     fig.update_layout(height=280, margin=dict(t=40, b=20))
                     fig.add_hline(y=183, line_dash="dash", line_color="green",
                                   annotation_text="Goal: 183")
@@ -313,26 +337,27 @@ with tab3:
                                    markers=True, color_discrete_sequence=["#e07b54"])
                     fig2.update_layout(height=280, margin=dict(t=40, b=20))
                     st.plotly_chart(fig2, use_container_width=True)
-                if df_m["bp_systolic"].notna().any():
-                                fig_bp = go.Figure()
-                                fig_bp.add_trace(go.Scatter(
-                                    x=df_m.dropna(subset=["bp_systolic"])["metric_date"],
-                                    y=df_m.dropna(subset=["bp_systolic"])["bp_systolic"],
-                                    name="Systolic", mode="lines+markers", line=dict(color="#e07b54")
-                                ))
-                                fig_bp.add_trace(go.Scatter(
-                                    x=df_m.dropna(subset=["bp_diastolic"])["metric_date"],
-                                    y=df_m.dropna(subset=["bp_diastolic"])["bp_diastolic"],
-                                    name="Diastolic", mode="lines+markers", line=dict(color="#7ab8f5")
-                                ))
-                                fig_bp.add_hline(y=120, line_dash="dash", line_color="#e07b54",
-                                                 annotation_text="120 target")
-                                fig_bp.add_hline(y=80, line_dash="dash", line_color="#7ab8f5",
-                                                 annotation_text="80 target")
-                                fig_bp.update_layout(title="Blood Pressure (mmHg)", height=280,
-                                                     margin=dict(t=40, b=20))
-                                st.plotly_chart(fig_bp, use_container_width=True)
-                    
+
+            if df_m["bp_systolic"].notna().any():
+                fig_bp = go.Figure()
+                fig_bp.add_trace(go.Scatter(
+                    x=df_m.dropna(subset=["bp_systolic"])["metric_date"],
+                    y=df_m.dropna(subset=["bp_systolic"])["bp_systolic"],
+                    name="Systolic", mode="lines+markers", line=dict(color="#e07b54")
+                ))
+                fig_bp.add_trace(go.Scatter(
+                    x=df_m.dropna(subset=["bp_diastolic"])["metric_date"],
+                    y=df_m.dropna(subset=["bp_diastolic"])["bp_diastolic"],
+                    name="Diastolic", mode="lines+markers", line=dict(color="#7ab8f5")
+                ))
+                fig_bp.add_hline(y=120, line_dash="dash", line_color="#e07b54",
+                                 annotation_text="120 target")
+                fig_bp.add_hline(y=80, line_dash="dash", line_color="#7ab8f5",
+                                 annotation_text="80 target")
+                fig_bp.update_layout(title="Blood Pressure (mmHg)", height=280,
+                                     margin=dict(t=40, b=20))
+                st.plotly_chart(fig_bp, use_container_width=True)
+
             if df_m["sleep_hours"].notna().any():
                 fig3 = px.bar(df_m.dropna(subset=["sleep_hours"]),
                               x="metric_date", y="sleep_hours",
@@ -358,7 +383,6 @@ with tab3:
                                font_color="#ccc")
             st.plotly_chart(fig4, use_container_width=True)
 
-            # RPE over time
             df_rpe = df_l[df_l["rpe"].notna()]
             if not df_rpe.empty:
                 fig5 = px.scatter(df_rpe, x="log_date", y="rpe",
@@ -375,30 +399,30 @@ with tab4:
     st.markdown("## 🤖 Coach")
     st.caption("Your personal Claude coach — knows your full training history. Ask anything.")
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         st.error("No API key found. Add `ANTHROPIC_API_KEY=your_key` to your `.env` file and restart the app.")
         st.code("ANTHROPIC_API_KEY=sk-ant-...")
         st.stop()
 
-    # Generate plan button
     with st.expander("⚡ Generate / Regenerate Weekly Plan"):
-        gen_week = st.date_input("Week starting (Monday)", value=date.today() - timedelta(days=date.today().weekday()))
-        gen_notes = st.text_area("Any notes for this week?",
-                                 placeholder="Missed Tuesday, big ski day Saturday planned, feeling tired…",
-                                 height=80)
-        if st.button("🗓️ Generate plan for this week", type="primary"):
-            with st.spinner("Claude is building your plan…"):
-                result = coach.generate_weekly_plan(gen_week.isoformat(), gen_notes)
-            if "error" in result:
-                st.error(f"Error: {result['error']}")
-                st.code(result.get("raw", ""))
-            else:
-                st.success("Plan generated and saved! Switch to the 'This Week' tab.")
+        with st.form("generate_plan_form"):
+            gen_week = st.date_input("Week starting (Monday)",
+                                     value=date.today() - timedelta(days=date.today().weekday()))
+            gen_notes = st.text_area("Any notes for this week?",
+                                     placeholder="Missed Tuesday, big ski day Saturday planned, feeling tired…",
+                                     height=80)
+            if st.form_submit_button("🗓️ Generate plan for this week", type="primary"):
+                with st.spinner("Claude is building your plan…"):
+                    result = coach.generate_weekly_plan(gen_week.isoformat(), gen_notes)
+                if "error" in result:
+                    st.error(f"Error: {result['error']}")
+                    st.code(result.get("raw", ""))
+                else:
+                    st.success("Plan generated and saved! Switch to the 'This Week' tab.")
 
     st.markdown("---")
 
-    # Chat interface
     history = db.get_chat_history(limit=50)
 
     chat_container = st.container(height=480)
@@ -424,7 +448,6 @@ with tab4:
             db.clear_chat_history()
             st.rerun()
 
-    # Quick prompts
     st.markdown("**Quick prompts:**")
     quick_prompts = [
         "Generate next week's plan",
